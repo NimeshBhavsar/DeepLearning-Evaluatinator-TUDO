@@ -91,6 +91,17 @@ REPORTS_SUBDIR = "reports"
 # =============================================================================
 
 @dataclass
+class DatasetInfo:
+    """Container for dataset information."""
+    name: str
+    folder_path: Path
+    train_df: pd.DataFrame
+    test_df: pd.DataFrame
+    test_internal_df: pd.DataFrame
+    ground_truth: np.ndarray
+
+
+@dataclass
 class EvaluationMetrics:
     """Container for all evaluation metrics."""
     accuracy: float
@@ -107,10 +118,12 @@ class EvaluationMetrics:
 class EvaluationResult:
     """Container for complete evaluation results of a submission."""
     submission_name: str
+    dataset_name: str
     success: bool
     metrics: Optional[EvaluationMetrics] = None
     predictions: Optional[np.ndarray] = None
     ground_truth: Optional[np.ndarray] = None
+    test_df: Optional[pd.DataFrame] = None
     error_message: Optional[str] = None
     execution_time: Optional[float] = None
 
@@ -119,12 +132,13 @@ class EvaluationResult:
 # Data Loading Functions
 # =============================================================================
 
-def load_csv_file(filepath: Path) -> pd.DataFrame:
+def load_csv_file(filepath: Path, silent: bool = False) -> pd.DataFrame:
     """
     Load a CSV file into a pandas DataFrame.
     
     Args:
         filepath: Path to the CSV file.
+        silent: If True, don't print loading message.
         
     Returns:
         DataFrame containing the CSV data.
@@ -137,13 +151,89 @@ def load_csv_file(filepath: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"CSV file not found: {filepath}")
     
     df = pd.read_csv(filepath)
-    print(f"  ✓ Loaded {filepath.name}: {len(df)} rows, {len(df.columns)} columns")
+    if not silent:
+        print(f"    ✓ Loaded {filepath.name}: {len(df)} rows, {len(df.columns)} columns")
     return df
+
+
+def is_valid_dataset_folder(folder_path: Path) -> bool:
+    """
+    Check if a folder contains all required dataset files.
+    
+    Args:
+        folder_path: Path to check.
+        
+    Returns:
+        True if folder contains train.csv, test.csv, and test_internal.csv.
+    """
+    required_files = [TRAIN_CSV, TEST_CSV, TEST_INTERNAL_CSV]
+    return all((folder_path / f).exists() for f in required_files)
+
+
+def discover_datasets(folder_path: Path) -> List[DatasetInfo]:
+    """
+    Discover all datasets in the submissions folder.
+    
+    Supports two modes:
+    1. Legacy mode: CSV files directly in submissions folder (single dataset named 'default')
+    2. Multi-dataset mode: Subfolders containing CSV files (each subfolder is a dataset)
+    
+    Args:
+        folder_path: Path to the submissions folder.
+        
+    Returns:
+        List of DatasetInfo objects.
+    """
+    datasets = []
+    
+    # Check for subfolders with datasets
+    for subfolder in folder_path.iterdir():
+        if subfolder.is_dir() and not subfolder.name.startswith('.') and subfolder.name != REPORTS_SUBDIR:
+            if is_valid_dataset_folder(subfolder):
+                datasets.append(subfolder)
+    
+    # If no dataset subfolders found, check if files are directly in submissions folder (legacy mode)
+    if not datasets and is_valid_dataset_folder(folder_path):
+        datasets.append(folder_path)
+    
+    # Load each dataset
+    loaded_datasets = []
+    for dataset_folder in sorted(datasets, key=lambda p: p.name.lower()):
+        dataset_name = "default" if dataset_folder == folder_path else dataset_folder.name
+        
+        print(f"\n  📁 Loading dataset: {dataset_name}")
+        try:
+            train_df = load_csv_file(dataset_folder / TRAIN_CSV)
+            test_df = load_csv_file(dataset_folder / TEST_CSV)
+            test_internal_df = load_csv_file(dataset_folder / TEST_INTERNAL_CSV)
+            
+            # Validate target column
+            if TARGET_COLUMN not in test_internal_df.columns:
+                print(f"    ⚠️  Skipping: Target column '{TARGET_COLUMN}' not found")
+                continue
+            
+            ground_truth = test_internal_df[TARGET_COLUMN].values
+            
+            loaded_datasets.append(DatasetInfo(
+                name=dataset_name,
+                folder_path=dataset_folder,
+                train_df=train_df,
+                test_df=test_df,
+                test_internal_df=test_internal_df,
+                ground_truth=ground_truth
+            ))
+            print(f"    ✓ Dataset '{dataset_name}' loaded ({len(ground_truth)} test samples)")
+            
+        except Exception as e:
+            print(f"    ⚠️  Error loading dataset '{dataset_name}': {e}")
+            continue
+    
+    return loaded_datasets
 
 
 def load_all_data(folder_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Load all required CSV files from the submissions folder.
+    Load all required CSV files from the submissions folder (legacy single-dataset mode).
     
     Args:
         folder_path: Path to the submissions folder.
@@ -486,6 +576,104 @@ def create_confusion_matrix_plot(
     plt.close()
 
 
+def create_points_visualization(
+    test_df: pd.DataFrame,
+    predictions: np.ndarray,
+    ground_truth: np.ndarray,
+    output_path_original: Path,
+    output_path_predicted: Path,
+    output_path_comparison: Path
+) -> None:
+    """
+    Create 3D visualizations of original and predicted points.
+    
+    Args:
+        test_df: Test DataFrame with x, y coordinates.
+        predictions: Predicted z values.
+        ground_truth: True z values.
+        output_path_original: Path to save original points plot.
+        output_path_predicted: Path to save predicted points plot.
+        output_path_comparison: Path to save comparison plot.
+    """
+    from mpl_toolkits.mplot3d import Axes3D
+    
+    # Extract x, y coordinates
+    x_coords = test_df['x'].values if 'x' in test_df.columns else test_df.iloc[:, 0].values
+    y_coords = test_df['y'].values if 'y' in test_df.columns else test_df.iloc[:, 1].values
+    
+    # Determine color/z limits for consistent scaling
+    vmin = min(ground_truth.min(), predictions.min())
+    vmax = max(ground_truth.max(), predictions.max())
+    
+    # Plot 1: Original points (ground truth) - 3D
+    fig1 = plt.figure(figsize=(10, 8))
+    ax1 = fig1.add_subplot(111, projection='3d')
+    scatter1 = ax1.scatter(x_coords, y_coords, ground_truth, 
+                           c=ground_truth, cmap='viridis', 
+                           s=50, alpha=0.7, edgecolors='k', linewidths=0.3,
+                           vmin=vmin, vmax=vmax)
+    ax1.set_xlabel('x', fontsize=12)
+    ax1.set_ylabel('y', fontsize=12)
+    ax1.set_zlabel('z', fontsize=12)
+    ax1.set_title('Original Points (Ground Truth)', fontsize=14, fontweight='bold')
+    cbar1 = fig1.colorbar(scatter1, ax=ax1, shrink=0.6, pad=0.1)
+    cbar1.set_label('z value', fontsize=10)
+    ax1.view_init(elev=25, azim=45)
+    plt.tight_layout()
+    plt.savefig(output_path_original, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Plot 2: Predicted points - 3D
+    fig2 = plt.figure(figsize=(10, 8))
+    ax2 = fig2.add_subplot(111, projection='3d')
+    scatter2 = ax2.scatter(x_coords, y_coords, predictions,
+                           c=predictions, cmap='viridis',
+                           s=50, alpha=0.7, edgecolors='k', linewidths=0.3,
+                           vmin=vmin, vmax=vmax)
+    ax2.set_xlabel('x', fontsize=12)
+    ax2.set_ylabel('y', fontsize=12)
+    ax2.set_zlabel('z', fontsize=12)
+    ax2.set_title('Predicted Points (Submission Output)', fontsize=14, fontweight='bold')
+    cbar2 = fig2.colorbar(scatter2, ax=ax2, shrink=0.6, pad=0.1)
+    cbar2.set_label('z value', fontsize=10)
+    ax2.view_init(elev=25, azim=45)
+    plt.tight_layout()
+    plt.savefig(output_path_predicted, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Plot 3: Side-by-side 3D comparison
+    fig3 = plt.figure(figsize=(16, 7))
+    
+    ax3a = fig3.add_subplot(121, projection='3d')
+    scatter3a = ax3a.scatter(x_coords, y_coords, ground_truth,
+                              c=ground_truth, cmap='viridis',
+                              s=40, alpha=0.7, edgecolors='k', linewidths=0.2,
+                              vmin=vmin, vmax=vmax)
+    ax3a.set_xlabel('x', fontsize=11)
+    ax3a.set_ylabel('y', fontsize=11)
+    ax3a.set_zlabel('z', fontsize=11)
+    ax3a.set_title('Ground Truth', fontsize=12, fontweight='bold')
+    ax3a.view_init(elev=25, azim=45)
+    fig3.colorbar(scatter3a, ax=ax3a, shrink=0.5, pad=0.1, label='z')
+    
+    ax3b = fig3.add_subplot(122, projection='3d')
+    scatter3b = ax3b.scatter(x_coords, y_coords, predictions,
+                              c=predictions, cmap='viridis',
+                              s=40, alpha=0.7, edgecolors='k', linewidths=0.2,
+                              vmin=vmin, vmax=vmax)
+    ax3b.set_xlabel('x', fontsize=11)
+    ax3b.set_ylabel('y', fontsize=11)
+    ax3b.set_zlabel('z', fontsize=11)
+    ax3b.set_title('Predictions', fontsize=12, fontweight='bold')
+    ax3b.view_init(elev=25, azim=45)
+    fig3.colorbar(scatter3b, ax=ax3b, shrink=0.5, pad=0.1, label='z')
+    
+    plt.suptitle('Ground Truth vs Predictions (3D)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_path_comparison, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
 def create_error_plot(
     predictions: np.ndarray,
     ground_truth: np.ndarray,
@@ -641,6 +829,7 @@ def generate_pdf_report(
     # Submission info table
     info_data = [
         ["Submission Name:", result.submission_name],
+        ["Dataset:", result.dataset_name],
         ["Evaluation Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
         ["Status:", "✓ Success" if result.success else "✗ Failed"],
     ]
@@ -744,6 +933,45 @@ def generate_pdf_report(
         
         if error_plot_path.exists():
             story.append(Image(str(error_plot_path), width=6*inch, height=2.5*inch))
+        
+        # Points visualization (if x, y coordinates available)
+        if result.test_df is not None and 'x' in result.test_df.columns and 'y' in result.test_df.columns:
+            # Page break for visualizations
+            story.append(PageBreak())
+            
+            # Original points visualization
+            story.append(Paragraph("Original Points (Ground Truth)", heading_style))
+            original_plot_path = temp_dir / f"original_{result.submission_name}.png"
+            predicted_plot_path = temp_dir / f"predicted_{result.submission_name}.png"
+            comparison_plot_path = temp_dir / f"comparison_{result.submission_name}.png"
+            
+            create_points_visualization(
+                result.test_df,
+                result.predictions,
+                result.ground_truth,
+                original_plot_path,
+                predicted_plot_path,
+                comparison_plot_path
+            )
+            
+            if original_plot_path.exists():
+                story.append(Image(str(original_plot_path), width=5.5*inch, height=4*inch))
+            
+            story.append(Spacer(1, 20))
+            
+            # Predicted points visualization
+            story.append(Paragraph("Predicted Points (Submission Output)", heading_style))
+            
+            if predicted_plot_path.exists():
+                story.append(Image(str(predicted_plot_path), width=5.5*inch, height=4*inch))
+            
+            story.append(PageBreak())
+            
+            # Side-by-side comparison
+            story.append(Paragraph("Comparison: Ground Truth vs Predictions", heading_style))
+            
+            if comparison_plot_path.exists():
+                story.append(Image(str(comparison_plot_path), width=6.5*inch, height=2.8*inch))
     
     # Build the PDF
     doc.build(story)
@@ -758,23 +986,25 @@ def evaluate_submission(
     submission_path: Path,
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
-    ground_truth: np.ndarray
+    ground_truth: np.ndarray,
+    dataset_name: str = "default"
 ) -> EvaluationResult:
     """
-    Evaluate a single submission.
+    Evaluate a single submission against a dataset.
     
     Args:
         submission_path: Path to the submission .py file.
         train_df: Training DataFrame.
         test_df: Test DataFrame.
         ground_truth: Ground truth values for evaluation.
+        dataset_name: Name of the dataset being evaluated.
         
     Returns:
         EvaluationResult with metrics or error information.
     """
     submission_name = submission_path.stem
     
-    print(f"\n  📝 Evaluating: {submission_name}")
+    print(f"\n  📝 Evaluating: {submission_name} on dataset '{dataset_name}'")
     
     try:
         # Step 1: Load the predict function
@@ -810,10 +1040,12 @@ def evaluate_submission(
         
         return EvaluationResult(
             submission_name=submission_name,
+            dataset_name=dataset_name,
             success=True,
             metrics=metrics,
             predictions=predictions,
             ground_truth=ground_truth,
+            test_df=test_df,
             execution_time=execution_time
         )
         
@@ -823,6 +1055,7 @@ def evaluate_submission(
         
         return EvaluationResult(
             submission_name=submission_name,
+            dataset_name=dataset_name,
             success=False,
             error_message=error_msg
         )
@@ -830,7 +1063,11 @@ def evaluate_submission(
 
 def run_evaluation_pipeline(folder_path: Path) -> None:
     """
-    Run the complete evaluation pipeline for all submissions.
+    Run the complete evaluation pipeline for all submissions against all datasets.
+    
+    Supports two modes:
+    1. Legacy mode: CSV files directly in submissions folder
+    2. Multi-dataset mode: Subfolders containing CSV files
     
     Args:
         folder_path: Path to the submissions folder.
@@ -846,29 +1083,36 @@ def run_evaluation_pipeline(folder_path: Path) -> None:
     if not folder.exists():
         print(f"\n❌ Error: Folder not found: {folder}")
         print(f"\n💡 Tip: Make sure to place your files in the ./submissions folder:")
-        print(f"    - train.csv")
-        print(f"    - test.csv")
-        print(f"    - test_internal.csv")
+        print(f"    - train.csv, test.csv, test_internal.csv (in root or subfolders)")
         print(f"    - your_submission.py")
         sys.exit(1)
     
-    # Load data
-    try:
-        train_df, test_df, test_internal_df = load_all_data(folder)
-    except FileNotFoundError as e:
-        print(f"\n❌ Error loading data: {e}")
-        print(f"\n💡 Required files in ./submissions folder:")
-        print(f"    - train.csv (training data with target column 'z')")
-        print(f"    - test.csv (test features without target)")
-        print(f"    - test_internal.csv (test data with ground truth 'z')")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"\n❌ Error: {e}")
+    # Discover datasets
+    print("\n📂 Discovering datasets...")
+    datasets = discover_datasets(folder)
+    
+    if not datasets:
+        print(f"\n❌ No valid datasets found!")
+        print(f"\n💡 Expected structure (Option 1 - Single dataset):")
+        print(f"    ./submissions/")
+        print(f"    ├── train.csv")
+        print(f"    ├── test.csv")
+        print(f"    ├── test_internal.csv")
+        print(f"    └── submission.py")
+        print(f"\n💡 Expected structure (Option 2 - Multiple datasets):")
+        print(f"    ./submissions/")
+        print(f"    ├── dataset1/")
+        print(f"    │   ├── train.csv")
+        print(f"    │   ├── test.csv")
+        print(f"    │   └── test_internal.csv")
+        print(f"    ├── dataset2/")
+        print(f"    │   ├── train.csv")
+        print(f"    │   ├── test.csv")
+        print(f"    │   └── test_internal.csv")
+        print(f"    └── submission.py")
         sys.exit(1)
     
-    # Extract ground truth
-    ground_truth = test_internal_df[TARGET_COLUMN].values
-    print(f"\n📊 Ground truth extracted: {len(ground_truth)} samples")
+    print(f"\n✓ Found {len(datasets)} dataset(s): {', '.join(d.name for d in datasets)}")
     
     # Discover submissions
     submissions = discover_submissions(folder)
@@ -890,25 +1134,36 @@ def run_evaluation_pipeline(folder_path: Path) -> None:
     temp_dir = reports_dir / "temp_plots"
     temp_dir.mkdir(exist_ok=True)
     
-    # Evaluate each submission
+    # Evaluate each submission against each dataset
     print("\n" + "=" * 70)
     print("Starting Evaluation")
     print("=" * 70)
     
     results: List[EvaluationResult] = []
     
-    for submission_path in submissions:
-        result = evaluate_submission(
-            submission_path,
-            train_df,
-            test_df,
-            ground_truth
-        )
-        results.append(result)
+    for dataset in datasets:
+        print(f"\n{'─' * 50}")
+        print(f"📊 Dataset: {dataset.name}")
+        print(f"{'─' * 50}")
         
-        # Generate PDF report
-        report_path = reports_dir / f"report_{result.submission_name}.pdf"
-        generate_pdf_report(result, report_path, temp_dir)
+        for submission_path in submissions:
+            result = evaluate_submission(
+                submission_path,
+                dataset.train_df,
+                dataset.test_df,
+                dataset.ground_truth,
+                dataset_name=dataset.name
+            )
+            results.append(result)
+            
+            # Generate PDF report with dataset name
+            if len(datasets) > 1:
+                report_name = f"report_{result.submission_name}_{dataset.name}.pdf"
+            else:
+                report_name = f"report_{result.submission_name}.pdf"
+            
+            report_path = reports_dir / report_name
+            generate_pdf_report(result, report_path, temp_dir)
     
     # Clean up temporary plot files
     for temp_file in temp_dir.glob("*.png"):
@@ -927,30 +1182,37 @@ def run_evaluation_pipeline(folder_path: Path) -> None:
     print(f"✗ Failed: {len(failed)}/{len(results)}")
     
     if successful:
-        print("\n📊 Results Overview:")
-        
-        # Determine if classification or regression based on first successful result
-        is_classification = successful[0].metrics.is_classification
-        
-        if is_classification:
-            print(f"\n{'Submission':<25} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>10} {'MSE':>12}")
-            print("-" * 77)
+        # Group results by dataset
+        for dataset in datasets:
+            dataset_results = [r for r in successful if r.dataset_name == dataset.name]
             
-            for r in successful:
-                m = r.metrics
-                print(f"{r.submission_name:<25} {m.accuracy:>10.4f} {m.precision:>10.4f} {m.recall:>10.4f} {m.f1:>10.4f} {m.mse:>12.6f}")
-        else:
-            print(f"\n{'Submission':<35} {'MSE':>15} {'RMSE':>15}")
-            print("-" * 65)
+            if not dataset_results:
+                continue
             
-            for r in successful:
-                m = r.metrics
-                print(f"{r.submission_name:<35} {m.mse:>15.6f} {np.sqrt(m.mse):>15.6f}")
+            print(f"\n📊 Results for dataset '{dataset.name}':")
+            
+            # Determine if classification or regression
+            is_classification = dataset_results[0].metrics.is_classification
+            
+            if is_classification:
+                print(f"\n{'Submission':<25} {'Accuracy':>10} {'Precision':>10} {'Recall':>10} {'F1':>10} {'MSE':>12}")
+                print("-" * 77)
+                
+                for r in dataset_results:
+                    m = r.metrics
+                    print(f"{r.submission_name:<25} {m.accuracy:>10.4f} {m.precision:>10.4f} {m.recall:>10.4f} {m.f1:>10.4f} {m.mse:>12.6f}")
+            else:
+                print(f"\n{'Submission':<35} {'MSE':>15} {'RMSE':>15}")
+                print("-" * 65)
+                
+                for r in dataset_results:
+                    m = r.metrics
+                    print(f"{r.submission_name:<35} {m.mse:>15.6f} {np.sqrt(m.mse):>15.6f}")
     
     if failed:
-        print("\n❌ Failed Submissions:")
+        print("\n❌ Failed Evaluations:")
         for r in failed:
-            print(f"  - {r.submission_name}: {r.error_message}")
+            print(f"  - {r.submission_name} on {r.dataset_name}: {r.error_message}")
     
     print(f"\n📁 Reports saved to: {reports_dir}")
     print("\n✅ Evaluation complete!")
@@ -970,14 +1232,26 @@ Example usage:
   python evaluator.py                      # Use default ./submissions folder
   python evaluator.py --folder ./my_data   # Use custom folder
 
-Expected folder structure:
+Expected folder structure (Option 1 - Single dataset):
   ./submissions/
   ├── train.csv
   ├── test.csv  
   ├── test_internal.csv
   ├── submission_1.py
-  ├── submission_2.py
-  └── ...
+  └── submission_2.py
+
+Expected folder structure (Option 2 - Multiple datasets):
+  ./submissions/
+  ├── dataset1/
+  │   ├── train.csv
+  │   ├── test.csv
+  │   └── test_internal.csv
+  ├── dataset2/
+  │   ├── train.csv
+  │   ├── test.csv
+  │   └── test_internal.csv
+  ├── submission_1.py
+  └── submission_2.py
         """
     )
     

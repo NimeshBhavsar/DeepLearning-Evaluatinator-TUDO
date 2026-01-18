@@ -111,6 +111,7 @@ class EvaluationResult:
     metrics: Optional[EvaluationMetrics] = None
     predictions: Optional[np.ndarray] = None
     ground_truth: Optional[np.ndarray] = None
+    test_df: Optional[pd.DataFrame] = None
     error_message: Optional[str] = None
     execution_time: Optional[float] = None
 
@@ -486,6 +487,104 @@ def create_confusion_matrix_plot(
     plt.close()
 
 
+def create_points_visualization(
+    test_df: pd.DataFrame,
+    predictions: np.ndarray,
+    ground_truth: np.ndarray,
+    output_path_original: Path,
+    output_path_predicted: Path,
+    output_path_comparison: Path
+) -> None:
+    """
+    Create 3D visualizations of original and predicted points.
+    
+    Args:
+        test_df: Test DataFrame with x, y coordinates.
+        predictions: Predicted z values.
+        ground_truth: True z values.
+        output_path_original: Path to save original points plot.
+        output_path_predicted: Path to save predicted points plot.
+        output_path_comparison: Path to save comparison plot.
+    """
+    from mpl_toolkits.mplot3d import Axes3D
+    
+    # Extract x, y coordinates
+    x_coords = test_df['x'].values if 'x' in test_df.columns else test_df.iloc[:, 0].values
+    y_coords = test_df['y'].values if 'y' in test_df.columns else test_df.iloc[:, 1].values
+    
+    # Determine color/z limits for consistent scaling
+    vmin = min(ground_truth.min(), predictions.min())
+    vmax = max(ground_truth.max(), predictions.max())
+    
+    # Plot 1: Original points (ground truth) - 3D
+    fig1 = plt.figure(figsize=(10, 8))
+    ax1 = fig1.add_subplot(111, projection='3d')
+    scatter1 = ax1.scatter(x_coords, y_coords, ground_truth, 
+                           c=ground_truth, cmap='viridis', 
+                           s=50, alpha=0.7, edgecolors='k', linewidths=0.3,
+                           vmin=vmin, vmax=vmax)
+    ax1.set_xlabel('x', fontsize=12)
+    ax1.set_ylabel('y', fontsize=12)
+    ax1.set_zlabel('z', fontsize=12)
+    ax1.set_title('Original Points (Ground Truth)', fontsize=14, fontweight='bold')
+    cbar1 = fig1.colorbar(scatter1, ax=ax1, shrink=0.6, pad=0.1)
+    cbar1.set_label('z value', fontsize=10)
+    ax1.view_init(elev=25, azim=45)
+    plt.tight_layout()
+    plt.savefig(output_path_original, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Plot 2: Predicted points - 3D
+    fig2 = plt.figure(figsize=(10, 8))
+    ax2 = fig2.add_subplot(111, projection='3d')
+    scatter2 = ax2.scatter(x_coords, y_coords, predictions,
+                           c=predictions, cmap='viridis',
+                           s=50, alpha=0.7, edgecolors='k', linewidths=0.3,
+                           vmin=vmin, vmax=vmax)
+    ax2.set_xlabel('x', fontsize=12)
+    ax2.set_ylabel('y', fontsize=12)
+    ax2.set_zlabel('z', fontsize=12)
+    ax2.set_title('Predicted Points (Submission Output)', fontsize=14, fontweight='bold')
+    cbar2 = fig2.colorbar(scatter2, ax=ax2, shrink=0.6, pad=0.1)
+    cbar2.set_label('z value', fontsize=10)
+    ax2.view_init(elev=25, azim=45)
+    plt.tight_layout()
+    plt.savefig(output_path_predicted, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Plot 3: Side-by-side 3D comparison
+    fig3 = plt.figure(figsize=(16, 7))
+    
+    ax3a = fig3.add_subplot(121, projection='3d')
+    scatter3a = ax3a.scatter(x_coords, y_coords, ground_truth,
+                              c=ground_truth, cmap='viridis',
+                              s=40, alpha=0.7, edgecolors='k', linewidths=0.2,
+                              vmin=vmin, vmax=vmax)
+    ax3a.set_xlabel('x', fontsize=11)
+    ax3a.set_ylabel('y', fontsize=11)
+    ax3a.set_zlabel('z', fontsize=11)
+    ax3a.set_title('Ground Truth', fontsize=12, fontweight='bold')
+    ax3a.view_init(elev=25, azim=45)
+    fig3.colorbar(scatter3a, ax=ax3a, shrink=0.5, pad=0.1, label='z')
+    
+    ax3b = fig3.add_subplot(122, projection='3d')
+    scatter3b = ax3b.scatter(x_coords, y_coords, predictions,
+                              c=predictions, cmap='viridis',
+                              s=40, alpha=0.7, edgecolors='k', linewidths=0.2,
+                              vmin=vmin, vmax=vmax)
+    ax3b.set_xlabel('x', fontsize=11)
+    ax3b.set_ylabel('y', fontsize=11)
+    ax3b.set_zlabel('z', fontsize=11)
+    ax3b.set_title('Predictions', fontsize=12, fontweight='bold')
+    ax3b.view_init(elev=25, azim=45)
+    fig3.colorbar(scatter3b, ax=ax3b, shrink=0.5, pad=0.1, label='z')
+    
+    plt.suptitle('Ground Truth vs Predictions (3D)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_path_comparison, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
 def create_error_plot(
     predictions: np.ndarray,
     ground_truth: np.ndarray,
@@ -744,6 +843,45 @@ def generate_pdf_report(
         
         if error_plot_path.exists():
             story.append(Image(str(error_plot_path), width=6*inch, height=2.5*inch))
+        
+        # Points visualization (if x, y coordinates available)
+        if result.test_df is not None and 'x' in result.test_df.columns and 'y' in result.test_df.columns:
+            # Page break for visualizations
+            story.append(PageBreak())
+            
+            # Original points visualization
+            story.append(Paragraph("Original Points (Ground Truth)", heading_style))
+            original_plot_path = temp_dir / f"original_{result.submission_name}.png"
+            predicted_plot_path = temp_dir / f"predicted_{result.submission_name}.png"
+            comparison_plot_path = temp_dir / f"comparison_{result.submission_name}.png"
+            
+            create_points_visualization(
+                result.test_df,
+                result.predictions,
+                result.ground_truth,
+                original_plot_path,
+                predicted_plot_path,
+                comparison_plot_path
+            )
+            
+            if original_plot_path.exists():
+                story.append(Image(str(original_plot_path), width=5.5*inch, height=4*inch))
+            
+            story.append(Spacer(1, 20))
+            
+            # Predicted points visualization
+            story.append(Paragraph("Predicted Points (Submission Output)", heading_style))
+            
+            if predicted_plot_path.exists():
+                story.append(Image(str(predicted_plot_path), width=5.5*inch, height=4*inch))
+            
+            story.append(PageBreak())
+            
+            # Side-by-side comparison
+            story.append(Paragraph("Comparison: Ground Truth vs Predictions", heading_style))
+            
+            if comparison_plot_path.exists():
+                story.append(Image(str(comparison_plot_path), width=6.5*inch, height=2.8*inch))
     
     # Build the PDF
     doc.build(story)
@@ -814,6 +952,7 @@ def evaluate_submission(
             metrics=metrics,
             predictions=predictions,
             ground_truth=ground_truth,
+            test_df=test_df,
             execution_time=execution_time
         )
         
