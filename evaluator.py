@@ -871,17 +871,17 @@ def generate_pdf_report(
         if metrics.is_classification:
             metrics_data = [
                 ["Metric", "Value"],
-                ["Accuracy", f"{metrics.accuracy:.4f}"],
-                ["Precision", f"{metrics.precision:.4f}"],
-                ["Recall", f"{metrics.recall:.4f}"],
-                ["F1 Score", f"{metrics.f1:.4f}"],
-                ["MSE", f"{metrics.mse:.6f}"],
+                ["Accuracy", f"{metrics.accuracy:.6e}"],
+                ["Precision", f"{metrics.precision:.6e}"],
+                ["Recall", f"{metrics.recall:.6e}"],
+                ["F1 Score", f"{metrics.f1:.6e}"],
+                ["MSE", f"{metrics.mse:.6e}"],
             ]
         else:
             metrics_data = [
                 ["Metric", "Value"],
-                ["Mean Squared Error (MSE)", f"{metrics.mse:.6f}"],
-                ["Root MSE (RMSE)", f"{np.sqrt(metrics.mse):.6f}"],
+                ["Mean Squared Error (MSE)", f"{metrics.mse:.6e}"],
+                ["Root MSE (RMSE)", f"{np.sqrt(metrics.mse):.6e}"],
             ]
         
         metrics_table = Table(metrics_data, colWidths=[3*inch, 2*inch])
@@ -1200,14 +1200,14 @@ def run_evaluation_pipeline(folder_path: Path) -> None:
                 
                 for r in dataset_results:
                     m = r.metrics
-                    print(f"{r.submission_name:<25} {m.accuracy:>10.4f} {m.precision:>10.4f} {m.recall:>10.4f} {m.f1:>10.4f} {m.mse:>12.6f}")
+                    print(f"{r.submission_name:<25} {m.accuracy:>10.6e} {m.precision:>10.6e} {m.recall:>10.6e} {m.f1:>10.6e} {m.mse:>12.6e}")
             else:
                 print(f"\n{'Submission':<35} {'MSE':>15} {'RMSE':>15}")
                 print("-" * 65)
                 
                 for r in dataset_results:
                     m = r.metrics
-                    print(f"{r.submission_name:<35} {m.mse:>15.6f} {np.sqrt(m.mse):>15.6f}")
+                    print(f"{r.submission_name:<35} {m.mse:>15.6e} {np.sqrt(m.mse):>15.6e}")
     
     if failed:
         print("\n❌ Failed Evaluations:")
